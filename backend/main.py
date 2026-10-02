@@ -1,0 +1,162 @@
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+import sqlite3
+
+from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+DB_PATH = Path(__file__).with_name("todo_app.db")
+
+
+@contextmanager
+def connect():
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def initialize():
+    with connect() as db:
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS todos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                completed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    initialize()
+    yield
+
+
+app = FastAPI(title="Daymark API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class TodoCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+
+
+class NoteCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(default="", max_length=20000)
+
+
+class NoteUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(default="", max_length=20000)
+
+
+def todo_dict(row):
+    return {"id": row["id"], "title": row["title"], "completed": bool(row["completed"]), "created_at": row["created_at"]}
+
+
+def note_dict(row):
+    return {"id": row["id"], "title": row["title"], "content": row["content"], "updated_at": row["updated_at"]}
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/todos")
+def list_todos():
+    with connect() as db:
+        rows = db.execute("SELECT * FROM todos ORDER BY id DESC").fetchall()
+    return [todo_dict(row) for row in rows]
+
+
+@app.post("/api/todos", status_code=status.HTTP_201_CREATED)
+def create_todo(todo: TodoCreate):
+    title = todo.title.strip()
+    if not title:
+        raise HTTPException(422, "Todo title cannot be blank")
+    with connect() as db:
+        cur = db.execute("INSERT INTO todos(title, created_at) VALUES (?, ?)", (title, datetime.now(timezone.utc).isoformat()))
+        row = db.execute("SELECT * FROM todos WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return todo_dict(row)
+
+
+@app.patch("/api/todos/{todo_id}")
+def toggle_todo(todo_id: int):
+    with connect() as db:
+        row = db.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Todo not found")
+        db.execute("UPDATE todos SET completed = ? WHERE id = ?", (0 if row["completed"] else 1, todo_id))
+        updated = db.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    return todo_dict(updated)
+
+
+@app.delete("/api/todos/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_todo(todo_id: int):
+    with connect() as db:
+        cur = db.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Todo not found")
+
+
+@app.get("/api/notes")
+def list_notes():
+    with connect() as db:
+        rows = db.execute("SELECT * FROM notes ORDER BY updated_at DESC").fetchall()
+    return [note_dict(row) for row in rows]
+
+
+@app.post("/api/notes", status_code=status.HTTP_201_CREATED)
+def create_note(note: NoteCreate):
+    title = note.title.strip()
+    if not title:
+        raise HTTPException(422, "Note title cannot be blank")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as db:
+        cur = db.execute("INSERT INTO notes(title, content, updated_at) VALUES (?, ?, ?)", (title, note.content, now))
+        row = db.execute("SELECT * FROM notes WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return note_dict(row)
+
+
+@app.put("/api/notes/{note_id}")
+def update_note(note_id: int, note: NoteUpdate):
+    title = note.title.strip()
+    if not title:
+        raise HTTPException(422, "Note title cannot be blank")
+    with connect() as db:
+        cur = db.execute("UPDATE notes SET title = ?, content = ?, updated_at = ? WHERE id = ?", (title, note.content, datetime.now(timezone.utc).isoformat(), note_id))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Note not found")
+        row = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    return note_dict(row)
+
+
+@app.delete("/api/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_note(note_id: int):
+    with connect() as db:
+        cur = db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Note not found")
