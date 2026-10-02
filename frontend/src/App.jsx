@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlarmClock, ArrowDown, ArrowUp, BookOpen, Check, CheckCircle2, ChevronDown, Circle, Clock3, Command, Ellipsis, FileText, Focus, Leaf, ListTodo, Menu, MoreHorizontal, Pause, Play, Plus, Search, Settings2, Sparkles, SquarePen, Trash2, X } from 'lucide-react'
 
-const API = 'http://localhost:8000/api'
+const API = import.meta.env.DEV ? 'http://localhost:8000/api' : '/api'
 const request = async (url, options) => {
   const response = await fetch(`${API}${url}`, { headers: { 'Content-Type': 'application/json' }, ...options })
   if (!response.ok) {

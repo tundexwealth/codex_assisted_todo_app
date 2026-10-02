@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -47,6 +48,11 @@ class ProductivityApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             main.create_note(main.NoteCreate(title=" "))
         self.assertEqual(error.exception.status_code, 422)
+
+    def test_vercel_requires_a_persistent_database_url(self):
+        with patch.dict("os.environ", {"VERCEL": "1"}), patch.object(main, "DATABASE_URL", None):
+            with self.assertRaisesRegex(RuntimeError, "DATABASE_URL"):
+                main.initialize()
 
 
 if __name__ == "__main__":
